@@ -1,0 +1,30 @@
+---
+import '../styles/global.css';
+
+// The URL for our backend authentication endpoint
+// In production, this would be read from import.meta.env
+const LOGIN_URL = "http://localhost:8000/auth/login";
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<meta name="viewport" content="width=device-width" />
+		<meta name="generator" content={Astro.generator} />
+		<title>Hobby Server Monitor | Login</title>
+		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+	</head>
+	<body>
+		<main class="login-container">
+			<div class="logo">🖥️</div>
+			<h1 class="title">Server Monitor</h1>
+			<p class="subtitle">Sign in to manage your LXD containers and view resource metrics.</p>
+			
+			<a href={LOGIN_URL} class="google-btn">
+				<img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" alt="Google Logo" />
+				Sign in with Google
+			</a>
+		</main>
+	</body>
+</html>
