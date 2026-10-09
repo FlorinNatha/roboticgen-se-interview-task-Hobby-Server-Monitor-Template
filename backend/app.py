@@ -229,6 +229,14 @@ class ContainerActionResource:
             resp.text = json.dumps({"error": str(e)})
 
 class UsersResource:
+    def on_get(self, req, resp):
+        user = req.context.user
+        if user['role'] != 'admin':
+            raise falcon.HTTPForbidden()
+        with get_db() as conn:
+            users = conn.execute("SELECT id, email, role, quota_ram, quota_cpu FROM users").fetchall()
+            resp.text = json.dumps([dict(u) for u in users])
+
     def on_post(self, req, resp):
         user = req.context.user
         if user['role'] != 'admin':
@@ -246,6 +254,70 @@ class UsersResource:
                 resp.status = falcon.HTTP_400
                 resp.text = json.dumps({"error": "User already exists."})
 
+class UserResource:
+    def on_put(self, req, resp, user_id):
+        user = req.context.user
+        if user['role'] != 'admin':
+            raise falcon.HTTPForbidden()
+        doc = req.get_media()
+        quota_ram = int(doc.get('quota_ram', 0))
+        quota_cpu = int(doc.get('quota_cpu', 0))
+        with get_db() as conn:
+            conn.execute("UPDATE users SET quota_ram = ?, quota_cpu = ? WHERE id = ?", (quota_ram, quota_cpu, user_id))
+            conn.commit()
+            resp.text = json.dumps({"message": "User quotas updated"})
+
+class ContainerAssignResource:
+    def on_put(self, req, resp, name):
+        user = req.context.user
+        if user['role'] != 'admin':
+            raise falcon.HTTPForbidden()
+        doc = req.get_media()
+        email = doc.get('email')
+        if not email:
+            # Unassign
+            with get_db() as conn:
+                conn.execute("UPDATE containers SET owner_id = NULL WHERE lxd_name = ?", (name,))
+                conn.commit()
+            resp.text = json.dumps({"message": f"Container {name} unassigned."})
+            return
+            
+        with get_db() as conn:
+            target_user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+            if not target_user:
+                raise falcon.HTTPBadRequest(description="User not found")
+            conn.execute("UPDATE containers SET owner_id = ? WHERE lxd_name = ?", (target_user['id'], name))
+            conn.commit()
+            resp.text = json.dumps({"message": f"Container {name} assigned to {email}"})
+
+class MeResource:
+    def on_get(self, req, resp):
+        user = req.context.user
+        resp.text = json.dumps({
+            "email": user['email'], 
+            "role": user['role'],
+            "quota_ram": user.get('quota_ram', 0),
+            "quota_cpu": user.get('quota_cpu', 0)
+        })
+
+class ContainerMetricsResource:
+    def on_get(self, req, resp, name):
+        try:
+            from tinyflux import TinyFlux, TagQuery
+            db = TinyFlux('metrics.db')
+            q = TagQuery()
+            records = db.search(q.container == name)
+            if records:
+                latest = records[-1]
+                resp.text = json.dumps({
+                    "cpu": round(latest.fields.get('cpu_usage', 0), 2),
+                    "ram": round(latest.fields.get('ram_usage_mb', 0), 2)
+                })
+            else:
+                resp.text = json.dumps({"cpu": 0, "ram": 0})
+        except Exception:
+            resp.text = json.dumps({"cpu": 0, "ram": 0})
+
 from falcon import CORSMiddleware
 
 cors = CORSMiddleware(
@@ -258,9 +330,13 @@ app = falcon.App(middleware=[cors, AuthMiddleware()])
 
 app.add_route('/auth/login', AuthResource(), suffix='google_login')
 app.add_route('/auth/google/callback', AuthResource(), suffix='google_callback')
+app.add_route('/api/me', MeResource())
 app.add_route('/api/containers', ContainerListResource())
+app.add_route('/api/containers/{name}/metrics', ContainerMetricsResource())
+app.add_route('/api/containers/{name}/assign', ContainerAssignResource())
 app.add_route('/api/containers/{name}/{action}', ContainerActionResource())
 app.add_route('/api/users', UsersResource())
+app.add_route('/api/users/{user_id}', UserResource())
 
 if __name__ == '__main__':
     from wsgiref.simple_server import make_server
