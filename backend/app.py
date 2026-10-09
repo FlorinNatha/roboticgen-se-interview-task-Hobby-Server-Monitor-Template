@@ -122,11 +122,26 @@ class ContainerListResource:
         results = []
         for c in client.containers.all():
             if c.name in assigned_containers or user['role'] == 'admin':
-                results.append({
+                info = {
                     "name": c.name,
                     "state": c.status,
-                    "architecture": c.architecture
-                })
+                    "architecture": c.architecture,
+                    "ip": "N/A",
+                    "processes": 0
+                }
+                if c.status == 'Running':
+                    try:
+                        state = c.state()
+                        info['processes'] = getattr(state, 'processes', 0)
+                        for iface, data in getattr(state, 'network', {}).items():
+                            if iface != 'lo':
+                                for addr in data.get('addresses', []):
+                                    if addr.get('family') == 'inet':
+                                        info['ip'] = addr.get('address')
+                                        break
+                    except Exception:
+                        pass
+                results.append(info)
         
         resp.text = json.dumps(results)
         resp.status = falcon.HTTP_200
@@ -140,25 +155,43 @@ class ContainerListResource:
         name = doc.get('name')
         ram_mb = int(doc.get('ram_mb', 512))
         cpu_cores = int(doc.get('cpu_cores', 1))
+        disk_gb = int(doc.get('disk_gb', 5))
+        alias = doc.get('alias', '24.04')
+        ephemeral = bool(doc.get('ephemeral', False))
+        autostart = bool(doc.get('autostart', True))
         
         # Validation bounds
         if ram_mb < 256 or ram_mb > 4096:
             raise falcon.HTTPBadRequest(description="RAM must be between 256MB and 4096MB")
         if cpu_cores < 1 or cpu_cores > 4:
             raise falcon.HTTPBadRequest(description="CPU cores must be between 1 and 4")
+        if disk_gb < 1 or disk_gb > 20:
+            raise falcon.HTTPBadRequest(description="Disk must be between 1GB and 20GB")
 
         client = Client()
         config = {
             'name': name,
+            'ephemeral': ephemeral,
             'source': {
                 'type': 'image',
                 'mode': 'pull',
                 'server': 'https://cloud-images.ubuntu.com/releases',
                 'protocol': 'simplestreams',
-                'alias': '24.04'
+                'alias': alias
             },
-            'limits.memory': f"{ram_mb}MB",
-            'limits.cpu': str(cpu_cores)
+            'config': {
+                'limits.memory': f"{ram_mb}MB",
+                'limits.cpu': str(cpu_cores),
+                'boot.autostart': 'true' if autostart else 'false'
+            },
+            'devices': {
+                'root': {
+                    'path': '/',
+                    'pool': 'default',
+                    'type': 'disk',
+                    'size': f"{disk_gb}GB"
+                }
+            }
         }
         
         try:
@@ -193,6 +226,12 @@ class ContainerActionResource:
                 container.start(wait=True)
             elif action == 'stop':
                 container.stop(wait=True)
+            elif action == 'restart':
+                container.restart(wait=True)
+            elif action == 'freeze':
+                container.freeze(wait=True)
+            elif action == 'unfreeze':
+                container.unfreeze(wait=True)
             elif action == 'delete':
                 if user['role'] != 'admin':
                     raise falcon.HTTPForbidden(description="Only admins can delete containers.")
@@ -233,9 +272,34 @@ class UsersResource:
         user = req.context.user
         if user['role'] != 'admin':
             raise falcon.HTTPForbidden()
+            
+        client = Client()
         with get_db() as conn:
             users = conn.execute("SELECT id, email, role, quota_ram, quota_cpu FROM users").fetchall()
-            resp.text = json.dumps([dict(u) for u in users])
+            
+            user_allocs = {u['id']: {"ram_used": 0, "cpu_used": 0} for u in users}
+            containers = conn.execute("SELECT lxd_name, owner_id FROM containers WHERE owner_id IS NOT NULL").fetchall()
+            c_dict = {c['lxd_name']: c['owner_id'] for c in containers}
+                
+            for lxd_c in client.containers.all():
+                owner_id = c_dict.get(lxd_c.name)
+                if owner_id and owner_id in user_allocs:
+                    mem = lxd_c.config.get('limits.memory', '0MB')
+                    cpu = lxd_c.config.get('limits.cpu', '0')
+                    mem_val = int(''.join(filter(str.isdigit, mem))) if any(c.isdigit() for c in mem) else 0
+                    cpu_val = int(cpu) if cpu.isdigit() else 0
+                    
+                    user_allocs[owner_id]["ram_used"] += mem_val
+                    user_allocs[owner_id]["cpu_used"] += cpu_val
+
+            result = []
+            for u in users:
+                u_dict = dict(u)
+                u_dict["ram_used"] = user_allocs[u['id']]["ram_used"]
+                u_dict["cpu_used"] = user_allocs[u['id']]["cpu_used"]
+                result.append(u_dict)
+                
+            resp.text = json.dumps(result)
 
     def on_post(self, req, resp):
         user = req.context.user
@@ -306,17 +370,71 @@ class ContainerMetricsResource:
             from tinyflux import TinyFlux, TagQuery
             db = TinyFlux('metrics.db')
             q = TagQuery()
-            records = db.search(q.container == name)
+            records = db.search(q.container_name == name)
             if records:
                 latest = records[-1]
+                fields = latest.fields
                 resp.text = json.dumps({
-                    "cpu": round(latest.fields.get('cpu_usage', 0), 2),
-                    "ram": round(latest.fields.get('ram_usage_mb', 0), 2)
+                    "cpu": round(fields.get('cpu_usage', 0), 2),
+                    "ram": round(fields.get('ram_usage_mb', 0), 2),
+                    "disk_mb": round(fields.get('disk_usage_bytes', 0) / (1024*1024), 2),
+                    "net_rx_kb": round(fields.get('network_rx_bytes', 0) / 1024, 2),
+                    "net_tx_kb": round(fields.get('network_tx_bytes', 0) / 1024, 2)
                 })
             else:
-                resp.text = json.dumps({"cpu": 0, "ram": 0})
+                resp.text = json.dumps({"cpu": 0, "ram": 0, "disk_mb": 0, "net_rx_kb": 0, "net_tx_kb": 0})
         except Exception:
-            resp.text = json.dumps({"cpu": 0, "ram": 0})
+            resp.text = json.dumps({"cpu": 0, "ram": 0, "disk_mb": 0, "net_rx_kb": 0, "net_tx_kb": 0})
+
+class ContainerHistoryResource:
+    def on_get(self, req, resp, name):
+        try:
+            from tinyflux import TinyFlux, TagQuery
+            db = TinyFlux('metrics.db')
+            q = TagQuery()
+            records = db.search(q.container_name == name)
+            history = []
+            for r in records[-60:]: # last 10 minutes (60 * 10s)
+                history.append({
+                    "time": r.time.strftime('%H:%M:%S'),
+                    "ram": round(r.fields.get('ram_usage_mb', 0), 2)
+                })
+            resp.text = json.dumps(history)
+        except Exception:
+            resp.text = json.dumps([])
+
+class AccountingResource:
+    def on_get(self, req, resp):
+        user = req.context.user
+        if user['role'] != 'admin':
+            raise falcon.HTTPForbidden()
+            
+        client = Client()
+        allocated_ram = 0
+        allocated_cpu = 0
+        
+        for lxd_c in client.containers.all():
+            mem = lxd_c.config.get('limits.memory', '0MB')
+            cpu = lxd_c.config.get('limits.cpu', '0')
+            mem_val = int(''.join(filter(str.isdigit, mem))) if any(c.isdigit() for c in mem) else 0
+            cpu_val = int(cpu) if cpu.isdigit() else 0
+            allocated_ram += mem_val
+            allocated_cpu += cpu_val
+            
+        try:
+            import psutil
+            total_ram_mb = int(psutil.virtual_memory().total / (1024 * 1024))
+            total_cpu = psutil.cpu_count()
+        except ImportError:
+            total_ram_mb = 16384
+            total_cpu = 8
+            
+        resp.text = json.dumps({
+            "host_ram_mb": total_ram_mb,
+            "host_cpu": total_cpu,
+            "allocated_ram_mb": allocated_ram,
+            "allocated_cpu": allocated_cpu
+        })
 
 from falcon import CORSMiddleware
 
@@ -333,10 +451,12 @@ app.add_route('/auth/google/callback', AuthResource(), suffix='google_callback')
 app.add_route('/api/me', MeResource())
 app.add_route('/api/containers', ContainerListResource())
 app.add_route('/api/containers/{name}/metrics', ContainerMetricsResource())
+app.add_route('/api/containers/{name}/history', ContainerHistoryResource())
 app.add_route('/api/containers/{name}/assign', ContainerAssignResource())
 app.add_route('/api/containers/{name}/{action}', ContainerActionResource())
 app.add_route('/api/users', UsersResource())
 app.add_route('/api/users/{user_id}', UserResource())
+app.add_route('/api/accounting', AccountingResource())
 
 if __name__ == '__main__':
     from wsgiref.simple_server import make_server
