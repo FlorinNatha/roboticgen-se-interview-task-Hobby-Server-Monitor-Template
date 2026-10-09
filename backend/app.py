@@ -35,7 +35,8 @@ def get_db():
 # --- Middleware for Auth ---
 class AuthMiddleware:
     def process_request(self, req, resp):
-        if req.path.startswith('/auth'):
+        # Skip auth for CORS preflight (OPTIONS) and auth routes
+        if req.method == 'OPTIONS' or req.path.startswith('/auth'):
             return
             
         token = req.cookies.get('session_token')
@@ -97,10 +98,12 @@ class AuthResource:
                 else:
                     raise falcon.HTTPForbidden(title="Access Denied", description="You have not been invited.")
                     
-        # Set a session cookie (in production, use a securely signed token)
-        resp.set_cookie('session_token', email, max_age=86400, secure=False, http_only=True)
-        # Redirect back to the Astro dashboard
-        raise falcon.HTTPFound('http://localhost:4321')
+        # Set a session cookie with path='/' so it is sent to all endpoints, not just /auth
+        resp.set_cookie('session_token', email, max_age=86400, secure=False, http_only=True, path='/')
+        
+        # Redirect back to the Astro dashboard safely to preserve the cookie
+        resp.status = falcon.HTTP_302
+        resp.location = 'http://localhost:4321/dashboard'
 
 # --- Container Resources ---
 class ContainerListResource:
@@ -147,7 +150,13 @@ class ContainerListResource:
         client = Client()
         config = {
             'name': name,
-            'source': {'type': 'image', 'alias': doc.get('image', 'ubuntu/24.04')},
+            'source': {
+                'type': 'image',
+                'mode': 'pull',
+                'server': 'https://cloud-images.ubuntu.com/releases',
+                'protocol': 'simplestreams',
+                'alias': '24.04'
+            },
             'limits.memory': f"{ram_mb}MB",
             'limits.cpu': str(cpu_cores)
         }
@@ -173,9 +182,9 @@ class ContainerActionResource:
         # Authorization check
         with get_db() as conn:
             c_record = conn.execute("SELECT * FROM containers WHERE lxd_name = ?", (name,)).fetchone()
-            if not c_record:
-                raise falcon.HTTPNotFound()
-            if user['role'] != 'admin' and c_record['owner_id'] != user['id']:
+            if not c_record and user['role'] != 'admin':
+                raise falcon.HTTPNotFound(description="Container not found in database.")
+            if c_record and user['role'] != 'admin' and c_record['owner_id'] != user['id']:
                 raise falcon.HTTPForbidden()
 
         try:
@@ -221,8 +230,15 @@ class UsersResource:
                 resp.status = falcon.HTTP_400
                 resp.text = json.dumps({"error": "User already exists."})
 
+from falcon import CORSMiddleware
+
+cors = CORSMiddleware(
+    allow_origins=['http://localhost:4321'],
+    allow_credentials='*'
+)
+
 # --- App Setup ---
-app = falcon.App(middleware=[AuthMiddleware()])
+app = falcon.App(middleware=[cors, AuthMiddleware()])
 
 app.add_route('/auth/login', AuthResource(), suffix='google_login')
 app.add_route('/auth/google/callback', AuthResource(), suffix='google_callback')
