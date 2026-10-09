@@ -436,6 +436,38 @@ class AccountingResource:
             "allocated_cpu": allocated_cpu
         })
 
+class ContainerLimitsResource:
+    def on_put(self, req, resp, name):
+        user = req.context.user
+        doc = req.get_media()
+        ram_mb = doc.get('ram_mb')
+        cpu_cores = doc.get('cpu_cores')
+        
+        with get_db() as conn:
+            c_record = conn.execute("SELECT * FROM containers WHERE lxd_name = ?", (name,)).fetchone()
+            if not c_record and user['role'] != 'admin':
+                raise falcon.HTTPNotFound(description="Container not found.")
+            if c_record and user['role'] != 'admin' and c_record['owner_id'] != user['id']:
+                raise falcon.HTTPForbidden()
+
+        client = Client()
+        try:
+            container = client.containers.get(name)
+            if ram_mb:
+                container.config['limits.memory'] = f"{ram_mb}MB"
+            if cpu_cores:
+                container.config['limits.cpu'] = str(cpu_cores)
+            container.save(wait=True)
+            
+            with get_db() as conn:
+                conn.execute("INSERT INTO audit_logs (user_id, action, target) VALUES (?, ?, ?)", (user['id'], 'update_limits', name))
+                conn.commit()
+                
+            resp.text = json.dumps({"message": f"Limits updated for {name}."})
+        except Exception as e:
+            resp.status = falcon.HTTP_400
+            resp.text = json.dumps({"error": str(e)})
+
 from falcon import CORSMiddleware
 
 cors = CORSMiddleware(
@@ -453,6 +485,7 @@ app.add_route('/api/containers', ContainerListResource())
 app.add_route('/api/containers/{name}/metrics', ContainerMetricsResource())
 app.add_route('/api/containers/{name}/history', ContainerHistoryResource())
 app.add_route('/api/containers/{name}/assign', ContainerAssignResource())
+app.add_route('/api/containers/{name}/limits', ContainerLimitsResource())
 app.add_route('/api/containers/{name}/{action}', ContainerActionResource())
 app.add_route('/api/users', UsersResource())
 app.add_route('/api/users/{user_id}', UserResource())

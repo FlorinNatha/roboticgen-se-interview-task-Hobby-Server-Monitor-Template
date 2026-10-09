@@ -1,0 +1,13 @@
+[Unit]
+Description=Hobby Server Monitor API (Falcon)
+After=network.target lxd.service
+
+[Service]
+User=root
+WorkingDirectory=/opt/hobby-monitor/backend
+ExecStart=/opt/hobby-monitor/backend/venv/bin/python app.py
+Restart=always
+Environment="PATH=/opt/hobby-monitor/backend/venv/bin"
+
+[Install]
+WantedBy=multi-user.target
