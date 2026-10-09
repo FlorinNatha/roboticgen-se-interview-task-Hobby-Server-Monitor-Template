@@ -6,13 +6,13 @@ Rough breakdown, not a timesheet.
 
 | Area | Time |
 | --- | --- |
-| Backend (API, auth, authorization) | ~2 hours |
-| Dashboard (Astro frontend) | ~2.5 hours |
-| LXD integration | ~1.5 hours |
-| Background collector / TSDB | ~1.5 hours |
-| Debugging | ~1 hour |
-| Documentation / report | ~0.5 hours |
-| **Total** | **~9 hours** |
+| Backend (API, auth, authorization) | ~3 hours |
+| Dashboard (Astro frontend) | ~3.5 hours |
+| LXD integration | ~2.5 hours |
+| Background collector / TSDB | ~2.5 hours |
+| Debugging | ~1.5 hour |
+| Documentation / report | ~1 hours |
+| **Total** | **~14 hours** |
 
 ## Key Decisions
 
