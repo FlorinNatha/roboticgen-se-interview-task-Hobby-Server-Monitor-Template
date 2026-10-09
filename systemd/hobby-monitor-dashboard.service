@@ -1,0 +1,13 @@
+[Unit]
+Description=Hobby Server Monitor Dashboard (Astro)
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/hobby-monitor/dashboard
+# Assumes 'npm run build' was run, and running via preview or Node adapter
+ExecStart=/usr/bin/npm run preview -- --host
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
