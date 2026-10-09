@@ -8,6 +8,7 @@ import '../styles/global.css';
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 	<title>Hobby Server Monitor | Dashboard</title>
 	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+	<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="dashboard-body">
 	<nav class="navbar">
@@ -28,6 +29,15 @@ import '../styles/global.css';
 				</div>
 				
 				<div class="form-group">
+					<label for="cAlias">OS Image</label>
+					<select id="cAlias" style="width:100%; padding:8px; background:#000; color:#fff; border:1px solid #30363d; border-radius:4px; margin-bottom: 12px;">
+						<option value="24.04">Ubuntu 24.04</option>
+						<option value="22.04">Ubuntu 22.04</option>
+						<option value="20.04">Ubuntu 20.04</option>
+					</select>
+				</div>
+
+				<div class="form-group">
 					<label for="cRam">RAM Limit (MB): <span id="ramVal">512</span></label>
 					<input type="range" id="cRam" min="256" max="4096" step="256" value="512" />
 				</div>
@@ -35,6 +45,16 @@ import '../styles/global.css';
 				<div class="form-group">
 					<label for="cCpu">CPU Cores: <span id="cpuVal">1</span></label>
 					<input type="range" id="cCpu" min="1" max="4" step="1" value="1" />
+				</div>
+
+				<div class="form-group">
+					<label for="cDisk">Disk Space: <span id="diskVal">5</span>GB</label>
+					<input type="range" id="cDisk" min="1" max="20" step="1" value="5" />
+				</div>
+
+				<div class="form-group" style="display:flex; gap:16px; margin-bottom: 16px;">
+					<label style="display:flex; align-items:center; gap:4px; font-weight:normal;"><input type="checkbox" id="cEph" /> Ephemeral</label>
+					<label style="display:flex; align-items:center; gap:4px; font-weight:normal;"><input type="checkbox" id="cAuto" checked /> Autostart</label>
 				</div>
 
 				<button type="submit" class="btn btn-primary" id="createBtn">Launch Container</button>
@@ -62,6 +82,15 @@ import '../styles/global.css';
 			
 			<div id="containerGrid" class="container-grid">
 				<p>Loading containers...</p>
+			</div>
+
+			<div id="adminAccountingSection" style="display:none; margin-top: 40px;">
+				<div class="header-row">
+					<h2>Host Accounting</h2>
+				</div>
+				<div class="container-card" id="accountingCard" style="max-width:400px; margin-top:16px;">
+					<p>Loading...</p>
+				</div>
 			</div>
 
 			<div id="adminUsersSection" style="display:none; margin-top: 40px;">
@@ -100,6 +129,10 @@ import '../styles/global.css';
 			document.getElementById('cpuVal').textContent = e.target.value;
 		});
 
+		document.getElementById('cDisk').addEventListener('input', (e) => {
+			document.getElementById('diskVal').textContent = e.target.value;
+		});
+
 		// State
 		let currentUserRole = 'user';
 
@@ -118,7 +151,9 @@ import '../styles/global.css';
 				if(user.role === 'admin') {
 					document.getElementById('inviteSection').style.display = 'block';
 					document.getElementById('adminUsersSection').style.display = 'block';
+					document.getElementById('adminAccountingSection').style.display = 'block';
 					fetchUsers();
+					fetchAccounting();
 				} else {
 					const createForm = document.getElementById('createForm');
 					createForm.style.display = 'none';
@@ -158,7 +193,13 @@ import '../styles/global.css';
 							const mRes = await fetch(`${API_URL}/containers/${c.name}/metrics`, {credentials: 'include'});
 							if(mRes.ok) {
 								const m = await mRes.json();
-								metricsHtml = `<p style="margin-top:8px; font-size:0.85rem; color:#58a6ff;">📊 CPU: ${m.cpu}% | RAM: ${m.ram}MB</p>`;
+								metricsHtml = `
+									<div style="display:flex; flex-direction:column; gap:4px; margin-top:8px; font-size:0.85rem; color:#c9d1d9;">
+										<span style="color:#58a6ff;">📊 CPU: ${m.cpu}% | RAM: ${m.ram}MB | Disk: ${m.disk_mb}MB</span>
+										<span style="color:#3fb950;">🌐 Net: ${m.net_rx_kb}KB↓ / ${m.net_tx_kb}KB↑</span>
+										<span style="color:#d2a8ff;">⚙️ IP: ${c.ip || 'N/A'} | Procs: ${c.processes || 0}</span>
+									</div>
+								`;
 							}
 						} catch(e) {}
 					}
@@ -183,13 +224,53 @@ import '../styles/global.css';
 						</div>
 						<div class="card-actions">
 							${c.state === 'Stopped' ? `<button onclick="window.containerAction('${c.name}', 'start')" class="btn btn-sm btn-success">Start</button>` : ''}
+							${c.state === 'Frozen' ? `<button onclick="window.containerAction('${c.name}', 'unfreeze')" class="btn btn-sm btn-success">Unfreeze</button>` : ''}
 							${c.state === 'Running' ? `<button onclick="window.containerAction('${c.name}', 'stop')" class="btn btn-sm btn-warning">Stop</button>
+							<button onclick="window.containerAction('${c.name}', 'restart')" class="btn btn-sm btn-outline">Restart</button>
+							<button onclick="window.containerAction('${c.name}', 'freeze')" class="btn btn-sm btn-outline">Freeze</button>
 							<button onclick="window.openTerminal('${c.name}')" class="btn btn-sm btn-outline">Terminal</button>` : ''}
 							<button onclick="window.containerAction('${c.name}', 'delete')" class="btn btn-sm btn-danger">Delete</button>
 						</div>
+						${c.state === 'Running' ? `<div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-color);"><canvas id="chart_${c.name}" width="400" height="150"></canvas></div>` : ''}
 						${assignHtml}
 					`;
 					grid.appendChild(card);
+
+					// Draw Historical Chart
+					if (c.state === 'Running') {
+						try {
+							const hRes = await fetch(`${API_URL}/containers/${c.name}/history`, {credentials: 'include'});
+							if(hRes.ok) {
+								const history = await hRes.json();
+								const ctx = document.getElementById(`chart_${c.name}`).getContext('2d');
+								new Chart(ctx, {
+									type: 'line',
+									data: {
+										labels: history.map(h => h.time),
+										datasets: [{
+											label: 'RAM Usage (MB)',
+											data: history.map(h => h.ram),
+											borderColor: '#58a6ff',
+											backgroundColor: 'rgba(88, 166, 255, 0.1)',
+											borderWidth: 2,
+											fill: true,
+											tension: 0.4,
+											pointRadius: 0
+										}]
+									},
+									options: {
+										responsive: true,
+										plugins: { legend: { display: false } },
+										scales: {
+											x: { display: false },
+											y: { display: true, beginAtZero: true }
+										},
+										animation: false
+									}
+								});
+							}
+						} catch(e) {}
+					}
 				}
 			} catch (err) {
 				console.error(err);
@@ -207,9 +288,15 @@ import '../styles/global.css';
 			users.forEach(u => {
 				const card = document.createElement('div');
 				card.className = 'container-card';
+				const ramOver = u.ram_used > u.quota_ram;
+				const cpuOver = u.cpu_used > u.quota_cpu;
 				card.innerHTML = `
 					<div class="card-header"><h3>${u.email}</h3><span class="status-badge status-running">${u.role}</span></div>
 					<div class="card-body">
+						<div style="font-size:12px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #30363d;">
+							<p style="color:#c9d1d9; margin-bottom:4px;"><strong>RAM Used:</strong> <span style="color:${ramOver ? '#f85149' : '#3fb950'}">${u.ram_used} MB</span> / ${u.quota_ram} MB</p>
+							<p style="color:#c9d1d9;"><strong>CPU Used:</strong> <span style="color:${cpuOver ? '#f85149' : '#3fb950'}">${u.cpu_used}</span> / ${u.quota_cpu} Cores</p>
+						</div>
 						<p style="display:flex; justify-content:space-between; margin-bottom:4px;">RAM Quota (MB): <input type="number" id="qram_${u.id}" value="${u.quota_ram}" style="width:70px; background:#000; color:#fff; border:1px solid #30363d;"/></p>
 						<p style="display:flex; justify-content:space-between;">CPU Quota: <input type="number" id="qcpu_${u.id}" value="${u.quota_cpu}" style="width:70px; background:#000; color:#fff; border:1px solid #30363d;"/></p>
 					</div>
@@ -219,6 +306,24 @@ import '../styles/global.css';
 				`;
 				grid.appendChild(card);
 			});
+		}
+
+		async function fetchAccounting() {
+			try {
+				const res = await fetch(`${API_URL}/accounting`, {credentials: 'include'});
+				if(res.ok) {
+					const acc = await res.json();
+					document.getElementById('accountingCard').innerHTML = `
+						<div class="card-body">
+							<p style="color:#c9d1d9; margin-bottom:4px;"><strong>Total Host RAM:</strong> ${acc.host_ram_mb} MB</p>
+							<p style="color:#c9d1d9; margin-bottom:8px;"><strong>Allocated RAM:</strong> <span style="color:${acc.allocated_ram_mb > acc.host_ram_mb ? '#f85149' : '#3fb950'};">${acc.allocated_ram_mb} MB</span></p>
+							<hr style="border-color:#30363d; margin:8px 0;"/>
+							<p style="color:#c9d1d9; margin-bottom:4px;"><strong>Total Host CPUs:</strong> ${acc.host_cpu}</p>
+							<p style="color:#c9d1d9;"><strong>Allocated CPUs:</strong> <span style="color:${acc.allocated_cpu > acc.host_cpu ? '#f85149' : '#3fb950'};">${acc.allocated_cpu}</span></p>
+						</div>
+					`;
+				}
+			} catch(e) {}
 		}
 
 		window.updateQuota = async function(id) {
@@ -274,7 +379,11 @@ import '../styles/global.css';
 			const data = {
 				name: document.getElementById('cName').value,
 				ram_mb: parseInt(document.getElementById('cRam').value),
-				cpu_cores: parseInt(document.getElementById('cCpu').value)
+				cpu_cores: parseInt(document.getElementById('cCpu').value),
+				disk_gb: parseInt(document.getElementById('cDisk').value),
+				alias: document.getElementById('cAlias').value,
+				ephemeral: document.getElementById('cEph').checked,
+				autostart: document.getElementById('cAuto').checked
 			};
 
 			try {
