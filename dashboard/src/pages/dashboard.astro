@@ -1,0 +1,228 @@
+---
+import '../styles/global.css';
+---
+
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>Hobby Server Monitor | Dashboard</title>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body class="dashboard-body">
+	<nav class="navbar">
+		<div class="nav-brand">🖥️ Server Monitor</div>
+		<div class="nav-user">
+			<span id="userEmail">Loading...</span>
+			<button id="logoutBtn" class="btn btn-outline">Logout</button>
+		</div>
+	</nav>
+
+	<main class="dashboard-container">
+		<div class="sidebar">
+			<h3>Create Container</h3>
+			<form id="createForm" class="create-form">
+				<div class="form-group">
+					<label for="cName">Container Name</label>
+					<input type="text" id="cName" required placeholder="e.g. web-server" />
+				</div>
+				
+				<div class="form-group">
+					<label for="cRam">RAM Limit (MB): <span id="ramVal">512</span></label>
+					<input type="range" id="cRam" min="256" max="4096" step="256" value="512" />
+				</div>
+
+				<div class="form-group">
+					<label for="cCpu">CPU Cores: <span id="cpuVal">1</span></label>
+					<input type="range" id="cCpu" min="1" max="4" step="1" value="1" />
+				</div>
+
+				<button type="submit" class="btn btn-primary" id="createBtn">Launch Container</button>
+			</form>
+		</div>
+
+		<div class="main-content">
+			<div class="header-row">
+				<h2>Your Containers</h2>
+				<button id="refreshBtn" class="btn btn-outline">🔄 Refresh</button>
+			</div>
+			
+			<div id="containerGrid" class="container-grid">
+				<p>Loading containers...</p>
+			</div>
+		</div>
+	</main>
+
+	<!-- Terminal Modal -->
+	<div id="terminalModal" class="modal" style="display: none;">
+		<div class="modal-content terminal-content">
+			<div class="modal-header">
+				<h3 id="termTitle">Terminal</h3>
+				<span class="close" onclick="document.getElementById('terminalModal').style.display='none'">&times;</span>
+			</div>
+			<div id="termOutput" class="terminal-output"></div>
+			<form id="termForm" style="display:flex; gap: 8px; margin-top: 10px;">
+				<input type="text" id="termInput" placeholder="Enter command (e.g. ls -la)..." autocomplete="off" style="flex:1; padding:8px; background:#000; color:#fff; border:1px solid #30363d; border-radius:4px;" />
+				<button type="submit" class="btn btn-primary" style="width: auto;">Run</button>
+			</form>
+		</div>
+	</div>
+
+	<script>
+		const API_URL = "http://localhost:8000/api";
+		
+		// Update sliders
+		document.getElementById('cRam').addEventListener('input', (e) => {
+			document.getElementById('ramVal').textContent = e.target.value;
+		});
+		document.getElementById('cCpu').addEventListener('input', (e) => {
+			document.getElementById('cpuVal').textContent = e.target.value;
+		});
+
+		// Fetch Containers
+		async function fetchContainers() {
+			const grid = document.getElementById('containerGrid');
+			grid.innerHTML = '<p>Loading...</p>';
+			
+			try {
+				const res = await fetch(`${API_URL}/containers`, {credentials: 'include'});
+				if (!res.ok) throw new Error('Unauthorized');
+				
+				const containers = await res.json();
+				grid.innerHTML = '';
+				
+				if(containers.length === 0) {
+					grid.innerHTML = '<p class="empty-state">No containers found. Create one!</p>';
+					return;
+				}
+
+				containers.forEach(c => {
+					const card = document.createElement('div');
+					card.className = 'container-card';
+					
+					const statusClass = c.state === 'Running' ? 'status-running' : 'status-stopped';
+					
+					card.innerHTML = `
+						<div class="card-header">
+							<h3>${c.name}</h3>
+							<span class="status-badge ${statusClass}">${c.state}</span>
+						</div>
+						<div class="card-body">
+							<p>Architecture: ${c.architecture}</p>
+						</div>
+						<div class="card-actions">
+							${c.state === 'Stopped' ? `<button onclick="window.containerAction('${c.name}', 'start')" class="btn btn-sm btn-success">Start</button>` : ''}
+							${c.state === 'Running' ? `<button onclick="window.containerAction('${c.name}', 'stop')" class="btn btn-sm btn-warning">Stop</button>
+							<button onclick="window.openTerminal('${c.name}')" class="btn btn-sm btn-outline">Terminal</button>` : ''}
+							<button onclick="window.containerAction('${c.name}', 'delete')" class="btn btn-sm btn-danger">Delete</button>
+						</div>
+					`;
+					grid.appendChild(card);
+				});
+			} catch (err) {
+				console.error(err);
+				window.location.href = "/"; // Redirect to login if unauth
+			}
+		}
+
+		// Actions
+		window.containerAction = async function(name, action) {
+			if(action === 'delete' && !confirm(`Are you sure you want to delete ${name}?`)) return;
+			
+			try {
+				const res = await fetch(`${API_URL}/containers/${name}/${action}`, {
+					method: 'POST',
+					credentials: 'include'
+				});
+				if (res.ok) fetchContainers();
+				else alert("Action failed.");
+			} catch (err) {
+				console.error(err);
+			}
+		};
+
+		// Create
+		document.getElementById('createForm').addEventListener('submit', async (e) => {
+			e.preventDefault();
+			const btn = document.getElementById('createBtn');
+			btn.disabled = true;
+			btn.textContent = "Creating...";
+
+			const data = {
+				name: document.getElementById('cName').value,
+				ram_mb: parseInt(document.getElementById('cRam').value),
+				cpu_cores: parseInt(document.getElementById('cCpu').value)
+			};
+
+			try {
+				const res = await fetch(`${API_URL}/containers`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(data),
+					credentials: 'include'
+				});
+				
+				if(res.ok) {
+					document.getElementById('createForm').reset();
+					document.getElementById('ramVal').textContent = '512';
+					document.getElementById('cpuVal').textContent = '1';
+					fetchContainers();
+				} else {
+					const err = await res.json();
+					alert(err.description || err.error || "Failed to create container.");
+				}
+			} finally {
+				btn.disabled = false;
+				btn.textContent = "Launch Container";
+			}
+		});
+
+		document.getElementById('refreshBtn').addEventListener('click', fetchContainers);
+		document.getElementById('logoutBtn').addEventListener('click', () => {
+			document.cookie = "session_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
+			window.location.href = "/";
+		});
+
+		// Terminal Logic
+		let currentTermContainer = "";
+		window.openTerminal = function(name) {
+			currentTermContainer = name;
+			document.getElementById('termTitle').textContent = `Terminal: ${name}`;
+			document.getElementById('termOutput').innerHTML = `<p style="color:#58a6ff;">Connected to ${name}. Ready for commands.</p>`;
+			document.getElementById('terminalModal').style.display = 'block';
+			document.getElementById('termInput').focus();
+		};
+
+		document.getElementById('termForm').addEventListener('submit', async (e) => {
+			e.preventDefault();
+			const inputField = document.getElementById('termInput');
+			const cmd = inputField.value;
+			if(!cmd) return;
+			inputField.value = "";
+			
+			const out = document.getElementById('termOutput');
+			out.innerHTML += `<p style="color:#c9d1d9;">$ ${cmd}</p>`;
+			out.scrollTop = out.scrollHeight;
+
+			try {
+				const res = await fetch(`${API_URL}/containers/${currentTermContainer}/terminal`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ command: cmd }),
+					credentials: 'include'
+				});
+				const data = await res.json();
+				if(data.stdout) out.innerHTML += `<pre style="color:#c9d1d9;">${data.stdout}</pre>`;
+				if(data.stderr) out.innerHTML += `<pre style="color:#f85149;">${data.stderr}</pre>`;
+				if(data.error) out.innerHTML += `<p style="color:#f85149;">Error: ${data.error}</p>`;
+			} catch(err) {
+				out.innerHTML += `<p style="color:#f85149;">Failed to execute.</p>`;
+			}
+			out.scrollTop = out.scrollHeight;
+		});
+
+		// Init
+		fetchContainers();
+	</script>
+</body>
+</html>

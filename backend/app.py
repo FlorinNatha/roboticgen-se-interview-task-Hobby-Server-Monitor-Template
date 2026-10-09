@@ -200,6 +200,22 @@ class ContainerActionResource:
                 with get_db() as conn:
                     conn.execute("DELETE FROM containers WHERE lxd_name = ?", (name,))
                     conn.commit()
+            elif action == 'terminal':
+                doc = req.get_media()
+                cmd_string = doc.get('command', '')
+                if not cmd_string:
+                    raise falcon.HTTPBadRequest(title="No command provided")
+                
+                import shlex
+                cmd_list = shlex.split(cmd_string)
+                res = container.execute(cmd_list)
+                
+                resp.text = json.dumps({
+                    "exit_code": res.exit_code,
+                    "stdout": res.stdout,
+                    "stderr": res.stderr
+                })
+                return
             else:
                 raise falcon.HTTPBadRequest(title="Invalid Action")
                 
