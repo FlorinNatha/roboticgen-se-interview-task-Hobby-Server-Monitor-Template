@@ -231,6 +231,11 @@ import '../styles/global.css';
 							<button onclick="window.openTerminal('${c.name}')" class="btn btn-sm btn-outline">Terminal</button>` : ''}
 							<button onclick="window.containerAction('${c.name}', 'delete')" class="btn btn-sm btn-danger">Delete</button>
 						</div>
+						<div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-color); display:flex; gap:4px;">
+							<input type="number" id="l_ram_${c.name}" placeholder="RAM (MB)" style="width:100%; padding:4px; background:#000; color:#fff; border:1px solid #30363d; border-radius:4px;" />
+							<input type="number" id="l_cpu_${c.name}" placeholder="CPUs" style="width:100%; padding:4px; background:#000; color:#fff; border:1px solid #30363d; border-radius:4px;" />
+							<button onclick="window.updateContainerLimits('${c.name}')" class="btn btn-sm btn-outline" style="white-space:nowrap;">Set Limits</button>
+						</div>
 						${c.state === 'Running' ? `<div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-color);"><canvas id="chart_${c.name}" width="400" height="150"></canvas></div>` : ''}
 						${assignHtml}
 					`;
@@ -364,6 +369,31 @@ import '../styles/global.css';
 				});
 				if (res.ok) fetchContainers();
 				else alert("Action failed.");
+			} catch (err) {
+				console.error(err);
+			}
+		};
+
+		window.updateContainerLimits = async function(name) {
+			const ram = document.getElementById(`l_ram_${name}`).value;
+			const cpu = document.getElementById(`l_cpu_${name}`).value;
+			if(!ram && !cpu) {
+				alert("Please enter a new RAM or CPU limit.");
+				return;
+			}
+			try {
+				const res = await fetch(`${API_URL}/containers/${name}/limits`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ ram_mb: ram, cpu_cores: cpu }),
+					credentials: 'include'
+				});
+				if (res.ok) {
+					alert("Limits updated successfully!");
+					fetchContainers();
+				} else {
+					alert("Failed to update limits.");
+				}
 			} catch (err) {
 				console.error(err);
 			}
