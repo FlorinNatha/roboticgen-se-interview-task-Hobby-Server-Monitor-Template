@@ -39,6 +39,19 @@ import '../styles/global.css';
 
 				<button type="submit" class="btn btn-primary" id="createBtn">Launch Container</button>
 			</form>
+
+			<!-- Invite User Form (Admin Only) -->
+			<div id="inviteSection" style="display:none; margin-top: 32px;">
+				<hr style="border-color: var(--border-color); margin-bottom: 24px;" />
+				<h3>Invite User</h3>
+				<form id="inviteForm" class="create-form">
+					<div class="form-group">
+						<label for="uEmail">User Email</label>
+						<input type="text" id="uEmail" required placeholder="user@example.com" />
+					</div>
+					<button type="submit" class="btn btn-primary">Send Invite</button>
+				</form>
+			</div>
 		</div>
 
 		<div class="main-content">
@@ -49,6 +62,14 @@ import '../styles/global.css';
 			
 			<div id="containerGrid" class="container-grid">
 				<p>Loading containers...</p>
+			</div>
+
+			<div id="adminUsersSection" style="display:none; margin-top: 40px;">
+				<div class="header-row">
+					<h2>User Management & Quotas</h2>
+					<button id="refreshUsersBtn" class="btn btn-outline">🔄 Refresh</button>
+				</div>
+				<div id="usersGrid" class="container-grid"></div>
 			</div>
 		</div>
 	</main>
@@ -79,6 +100,35 @@ import '../styles/global.css';
 			document.getElementById('cpuVal').textContent = e.target.value;
 		});
 
+		// State
+		let currentUserRole = 'user';
+
+		// Fetch User Info to handle Roles
+		async function fetchUser() {
+			try {
+				const res = await fetch(`${API_URL}/me`, {credentials: 'include'});
+				if(!res.ok) throw new Error('Unauth');
+				const user = await res.json();
+				currentUserRole = user.role;
+				
+				let displayStr = `${user.email} (${user.role})`;
+				if(user.role === 'user') displayStr += ` | Quota: ${user.quota_ram}MB, ${user.quota_cpu}C`;
+				document.getElementById('userEmail').textContent = displayStr;
+				
+				if(user.role === 'admin') {
+					document.getElementById('inviteSection').style.display = 'block';
+					document.getElementById('adminUsersSection').style.display = 'block';
+					fetchUsers();
+				} else {
+					const createForm = document.getElementById('createForm');
+					createForm.style.display = 'none';
+					createForm.parentElement.innerHTML += '<p style="color:#8b949e">You are a standard user. You can view and manage containers assigned to you.</p>';
+				}
+			} catch(e) {
+				window.location.href = "/";
+			}
+		}
+
 		// Fetch Containers
 		async function fetchContainers() {
 			const grid = document.getElementById('containerGrid');
@@ -92,16 +142,36 @@ import '../styles/global.css';
 				grid.innerHTML = '';
 				
 				if(containers.length === 0) {
-					grid.innerHTML = '<p class="empty-state">No containers found. Create one!</p>';
+					grid.innerHTML = '<p class="empty-state">No containers found.</p>';
 					return;
 				}
 
-				containers.forEach(c => {
+				for (const c of containers) {
 					const card = document.createElement('div');
 					card.className = 'container-card';
 					
 					const statusClass = c.state === 'Running' ? 'status-running' : 'status-stopped';
 					
+					let metricsHtml = '<p style="margin-top:8px; font-size:0.85rem; color:#8b949e;">Metrics: Stopped</p>';
+					if (c.state === 'Running') {
+						try {
+							const mRes = await fetch(`${API_URL}/containers/${c.name}/metrics`, {credentials: 'include'});
+							if(mRes.ok) {
+								const m = await mRes.json();
+								metricsHtml = `<p style="margin-top:8px; font-size:0.85rem; color:#58a6ff;">📊 CPU: ${m.cpu}% | RAM: ${m.ram}MB</p>`;
+							}
+						} catch(e) {}
+					}
+
+					let assignHtml = '';
+					if (currentUserRole === 'admin') {
+						assignHtml = `<hr style="border-color:var(--border-color); margin: 8px 0;"/>
+							<div style="display:flex; gap:4px;">
+								<input type="text" id="assign_${c.name}" placeholder="Assign to email..." style="width:100%; padding:4px; background:#000; color:#fff; border:1px solid #30363d; border-radius:4px;" />
+								<button onclick="window.assignContainer('${c.name}')" class="btn btn-sm btn-outline">Assign</button>
+							</div>`;
+					}
+
 					card.innerHTML = `
 						<div class="card-header">
 							<h3>${c.name}</h3>
@@ -109,6 +179,7 @@ import '../styles/global.css';
 						</div>
 						<div class="card-body">
 							<p>Architecture: ${c.architecture}</p>
+							${metricsHtml}
 						</div>
 						<div class="card-actions">
 							${c.state === 'Stopped' ? `<button onclick="window.containerAction('${c.name}', 'start')" class="btn btn-sm btn-success">Start</button>` : ''}
@@ -116,14 +187,66 @@ import '../styles/global.css';
 							<button onclick="window.openTerminal('${c.name}')" class="btn btn-sm btn-outline">Terminal</button>` : ''}
 							<button onclick="window.containerAction('${c.name}', 'delete')" class="btn btn-sm btn-danger">Delete</button>
 						</div>
+						${assignHtml}
 					`;
 					grid.appendChild(card);
-				});
+				}
 			} catch (err) {
 				console.error(err);
 				window.location.href = "/"; // Redirect to login if unauth
 			}
 		}
+
+		// User Management
+		async function fetchUsers() {
+			const res = await fetch(`${API_URL}/users`, {credentials: 'include'});
+			if(!res.ok) return;
+			const users = await res.json();
+			const grid = document.getElementById('usersGrid');
+			grid.innerHTML = '';
+			users.forEach(u => {
+				const card = document.createElement('div');
+				card.className = 'container-card';
+				card.innerHTML = `
+					<div class="card-header"><h3>${u.email}</h3><span class="status-badge status-running">${u.role}</span></div>
+					<div class="card-body">
+						<p style="display:flex; justify-content:space-between; margin-bottom:4px;">RAM Quota (MB): <input type="number" id="qram_${u.id}" value="${u.quota_ram}" style="width:70px; background:#000; color:#fff; border:1px solid #30363d;"/></p>
+						<p style="display:flex; justify-content:space-between;">CPU Quota: <input type="number" id="qcpu_${u.id}" value="${u.quota_cpu}" style="width:70px; background:#000; color:#fff; border:1px solid #30363d;"/></p>
+					</div>
+					<div class="card-actions">
+						<button onclick="window.updateQuota(${u.id})" class="btn btn-sm btn-primary">Save Quotas</button>
+					</div>
+				`;
+				grid.appendChild(card);
+			});
+		}
+
+		window.updateQuota = async function(id) {
+			const qram = document.getElementById(`qram_${id}`).value;
+			const qcpu = document.getElementById(`qcpu_${id}`).value;
+			const res = await fetch(`${API_URL}/users/${id}`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ quota_ram: qram, quota_cpu: qcpu }),
+				credentials: 'include'
+			});
+			if(res.ok) alert("Quotas updated!");
+			else alert("Failed to update quotas.");
+		};
+
+		window.assignContainer = async function(name) {
+			const email = document.getElementById(`assign_${name}`).value;
+			const res = await fetch(`${API_URL}/containers/${name}/assign`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email: email }),
+				credentials: 'include'
+			});
+			if(res.ok) {
+				alert(email ? `Assigned to ${email}` : "Unassigned container");
+				fetchContainers();
+			} else alert("Failed to assign (user must exist)");
+		};
 
 		// Actions
 		window.containerAction = async function(name, action) {
@@ -177,6 +300,36 @@ import '../styles/global.css';
 			}
 		});
 
+		// Invite Logic
+		const inviteForm = document.getElementById('inviteForm');
+		if(inviteForm) {
+			inviteForm.addEventListener('submit', async (e) => {
+				e.preventDefault();
+				const btn = e.target.querySelector('button');
+				btn.disabled = true;
+				try {
+					const res = await fetch(`${API_URL}/users`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ email: document.getElementById('uEmail').value }),
+						credentials: 'include'
+					});
+					if(res.ok) {
+						alert("User invited successfully!");
+						e.target.reset();
+					} else {
+						const err = await res.json();
+						alert(err.error || "Failed to invite");
+					}
+				} finally {
+					btn.disabled = false;
+				}
+			});
+		}
+
+		const refreshUsersBtn = document.getElementById('refreshUsersBtn');
+		if (refreshUsersBtn) refreshUsersBtn.addEventListener('click', fetchUsers);
+		
 		document.getElementById('refreshBtn').addEventListener('click', fetchContainers);
 		document.getElementById('logoutBtn').addEventListener('click', () => {
 			document.cookie = "session_token=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;";
@@ -222,7 +375,10 @@ import '../styles/global.css';
 		});
 
 		// Init
-		fetchContainers();
+		(async function init() {
+			await fetchUser();
+			await fetchContainers();
+		})();
 	</script>
 </body>
 </html>
