@@ -44,8 +44,8 @@ def collect_metrics():
                     net_tx = 0
                     for interface, data in state.network.items():
                         if interface != 'lo':  # Ignore localhost loopback
-                            net_rx += data.counters.get('bytes_received', 0)
-                            net_tx += data.counters.get('bytes_sent', 0)
+                            net_rx += data.get('counters', {}).get('bytes_received', 0)
+                            net_tx += data.get('counters', {}).get('bytes_sent', 0)
                             
                     # Disk usage parsing (root disk)
                     disk_used = 0
@@ -58,7 +58,9 @@ def collect_metrics():
                         tags={"container_name": container.name},
                         fields={
                             "memory_usage_bytes": mem_used,
+                            "ram_usage_mb": mem_used / (1024 * 1024),
                             "cpu_usage_ns": cpu_used,
+                            "cpu_usage": 0, # Requires delta computation for %
                             "network_rx_bytes": net_rx,
                             "network_tx_bytes": net_tx,
                             "disk_usage_bytes": disk_used,
